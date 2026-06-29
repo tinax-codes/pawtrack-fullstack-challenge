@@ -10,6 +10,7 @@ interface ListBookingsParams {
   limit: number;
   date?: string;
   status?: BookingStatus;
+  sitterId?: string;
 }
 
 interface CreateBookingParams {
@@ -24,16 +25,20 @@ interface CreateBookingParams {
 }
 
 export class BookingService {
+  private sitterLocks: Map<string, Promise<void>> = new Map();
   /**
    * List bookings for a tenant with optional date and status filters.
    * Supports pagination.
    */
   public listBookings(params: ListBookingsParams): PaginatedResult<Booking> {
-    const { tenantId, page, limit, date, status } = params;
+    const { tenantId, page, limit, date, status, sitterId } = params;
 
     let bookings = store.getBookingsByTenant(tenantId);
 
-    // Filter by date if provided
+    if (sitterId) {
+      bookings = bookings.filter(b => b.sitterId === sitterId);
+    }
+
     if (date) {
       // Match bookings on the requested date
       bookings = bookings.filter(b => b.scheduledDate.startsWith(date));
@@ -50,7 +55,7 @@ export class BookingService {
     const total = bookings.length;
     const totalPages = Math.ceil(total / limit);
 
-    const offset = page * limit;
+    const offset = (page - 1) * limit;
     const paginatedBookings = bookings.slice(offset, offset + limit);
 
     return {
@@ -67,10 +72,28 @@ export class BookingService {
    * Checks for overlapping bookings with the same sitter.
    */
   public async createBooking(params: CreateBookingParams): Promise<Booking> {
+    const { sitterId } = params;
+
+    const existing = this.sitterLocks.get(sitterId) ?? Promise.resolve();
+    let resolve!: () => void;
+    const lock = new Promise<void>(r => { resolve = r; });
+    this.sitterLocks.set(sitterId, lock);
+
+    try {
+      await existing;
+      return await this._createBookingUnsafe(params);
+    } finally {
+      resolve();
+      if (this.sitterLocks.get(sitterId) === lock) {
+        this.sitterLocks.delete(sitterId);
+      }
+    }
+  }
+
+  private async _createBookingUnsafe(params: CreateBookingParams): Promise<Booking> {
     const { tenantId, petId, sitterId, scheduledDate, startTime, endTime, notes, createdBy } = params;
 
-    // Check for overlapping bookings with the same sitter
-    const existingBookings = store.getAllBookings().filter(
+    const existingBookings = store.getBookingsByTenant(tenantId).filter(
       b => b.sitterId === sitterId && b.status !== 'cancelled',
     );
 
@@ -87,7 +110,6 @@ export class BookingService {
       throw new Error('Sitter has an overlapping booking for this time slot');
     }
 
-    // Simulate async operation (like a database write)
     await new Promise(resolve => setTimeout(resolve, 10));
 
     const now = new Date().toISOString();
