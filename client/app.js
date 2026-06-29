@@ -18,6 +18,9 @@ let filters = {
   page: 1,
 };
 
+// Tracks the current in-flight request so we can cancel it when a newer one fires
+let currentRequestController = null;
+
 // ============================================
 // Initialization
 // ============================================
@@ -29,7 +32,6 @@ document.addEventListener('DOMContentLoaded', () => {
   fetchBookings(filters);
   loadPetsAndSitters();
 
-  // Poll for booking updates every 15 seconds
   setInterval(() => {
     fetchBookings(filters);
   }, 15000);
@@ -50,13 +52,14 @@ function initFilters() {
   const refreshBtn = document.getElementById('refresh-btn');
 
   dateFilter.addEventListener('change', (e) => {
-    // Reassigns filters to a new object — the polling closure still has the old one
-    filters = { ...filters, date: e.target.value, page: 1 };
+    filters.date = e.target.value;
+    filters.page = 1;
     fetchBookings(filters);
   });
 
   statusFilter.addEventListener('change', (e) => {
-    filters = { ...filters, status: e.target.value, page: 1 };
+    filters.status = e.target.value;
+    filters.page = 1;
     fetchBookings(filters);
   });
 
@@ -70,6 +73,12 @@ function initFilters() {
 // ============================================
 
 async function fetchBookings(currentFilters) {
+  if (currentRequestController) {
+    currentRequestController.abort();
+  }
+  const controller = new AbortController();
+  currentRequestController = controller;
+
   const loadingEl = document.getElementById('loading-indicator');
   const errorEl = document.getElementById('error-message');
   const listEl = document.getElementById('bookings-list');
@@ -86,6 +95,7 @@ async function fetchBookings(currentFilters) {
   try {
     const response = await fetch(`${API_BASE}/api/bookings?${params}`, {
       headers: AUTH_HEADERS,
+      signal: controller.signal,
     });
     const result = await response.json();
 
@@ -100,6 +110,7 @@ async function fetchBookings(currentFilters) {
     renderBookings(result.data, listEl);
     renderPagination(result);
   } catch (err) {
+    if (err.name === 'AbortError') return;
     loadingEl.style.display = 'none';
     errorEl.textContent = 'Failed to load bookings. Is the server running?';
     errorEl.style.display = 'block';
@@ -126,7 +137,7 @@ function renderBookings(bookings, container) {
             <span>Date: ${date}</span>
             <span>Time: ${booking.startTime} - ${booking.endTime}</span>
           </div>
-          <div class="booking-notes">${booking.notes}</div>
+          <div class="booking-notes">${escapeHtml(booking.notes)}</div>
         </div>
         <div class="booking-actions">
           <span class="status-badge status-${booking.status}">
@@ -209,8 +220,8 @@ function renderPagination(result) {
   paginationEl.innerHTML = html;
 }
 
-function goToPage(page) {
-  filters = { ...filters, page };
+function goToPage(newPage) {
+  filters.page = newPage;
   fetchBookings(filters);
 }
 
@@ -324,6 +335,12 @@ function showToast(message, type) {
   document.body.appendChild(toast);
 
   setTimeout(() => toast.remove(), 3000);
+}
+
+function escapeHtml(str) {
+  const div = document.createElement('div');
+  div.textContent = str;
+  return div.innerHTML;
 }
 
 // Make goToPage available globally for inline onclick handlers
